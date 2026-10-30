@@ -2,7 +2,7 @@
    No network requests are ever made by this script. */
 'use strict';
 (() => {
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '2.0.0';
   const STEPS = [0, 25, 50, 75, 100];
   const SPACES = { work: 'Work', personal: 'Personal' };
 
@@ -91,11 +91,20 @@
     saveChain = saveChain.then(() => Store.set('state', snap)).catch((err) => { console.warn('save failed', err); toast('Could not save — storage blocked or full'); });
     return saveChain;
   }
+  let fxMuted = false;
   function commit(msg, mutate, undoable = true) {
     const before = undoable ? JSON.stringify(state) : null;
+    const wasDone = new Set(state.tasks.filter((t) => t.progress >= 100).map((t) => t.id));
     mutate();
+    const newly = fxMuted ? [] : state.tasks.filter((t) => t.progress >= 100 && !wasDone.has(t.id)).map((t) => t.id);
+    const pts = newly.length > 3 ? [] : newly.map((id) => {
+      const r = els.main.querySelector(`.task[data-id="${CSS.escape(id)}"] .ring`);
+      if (r) { const b = r.getBoundingClientRect(); if (b.bottom > 0 && b.top < innerHeight) return [b.left + b.width / 2, b.top + b.height / 2]; }
+      return [innerWidth / 2, innerHeight * 0.42];
+    });
     persist();
     render();
+    pts.forEach((p, i) => setTimeout(() => burst(p[0], p[1]), i * 120));
     if (msg) toast(msg, undoable ? () => { state = JSON.parse(before); persist(); render(); } : null);
   }
 
@@ -184,9 +193,9 @@
   const els = {};
   function ringSvg(t) {
     const p = t.progress, C = 100.53, done = p >= 100;
-    const lbl = done ? '<svg viewBox="0 0 24 24" style="width:20px;height:20px;transform:none;stroke:#fff;stroke-width:3"><path d="m6 12.5 4 4 8-9"/></svg>'
-      : t.blocked ? '<svg viewBox="0 0 24 24" style="width:16px;height:16px;transform:none;stroke-width:3"><path d="M9 6v12M15 6v12"/></svg>' : p ? p + '' : '';
-    return `<svg viewBox="0 0 40 40" aria-hidden="true">${done ? '<circle class="fill" cx="20" cy="20" r="18"/>' : ''}<circle class="trk" cx="20" cy="20" r="16"/><circle class="arc" cx="20" cy="20" r="16" stroke-dasharray="${C}" stroke-dashoffset="${(C * (1 - p / 100)).toFixed(2)}"/></svg><span class="rl">${lbl}</span>`;
+    const lbl = done ? '<svg viewBox="0 0 24 24" style="width:20px;height:20px;transform:none;filter:none;stroke-width:3.2"><path d="m6 12.5 4 4 8-9"/></svg>'
+      : t.blocked ? '<svg viewBox="0 0 24 24" style="width:16px;height:16px;transform:none;filter:none;stroke-width:3"><path d="M9 6v12M15 6v12"/></svg>' : p ? p + '' : '';
+    return `<svg viewBox="0 0 40 40" aria-hidden="true">${done ? '<circle class="fill" cx="20" cy="20" r="18"/>' : ''}<circle class="trk" cx="20" cy="20" r="16"/><circle class="arc" cx="20" cy="20" r="16" stroke-dasharray="${C}" data-rk="${esc(t.id)}" data-off="${(C * (1 - p / 100)).toFixed(2)}" style="stroke-dashoffset:${(ringMem.has(t.id) ? ringMem.get(t.id) : C).toFixed(2)}"/></svg><span class="rl">${lbl}</span>`;
   }
   function taskRow(t, showSpace) {
     const st = statusOf(t); const dl = t.due ? dueInfo(t.due) : null; const tg = t.targetId ? getTarget(t.targetId) : null;
@@ -201,8 +210,9 @@
       t.notes ? '<span aria-label="has notes">✎</span>' : '',
     ].join('');
     const aria = `${esc(t.title)}. ${st === 'done' ? 'Done' : t.progress + ' percent'}. Tap to advance progress.`;
-    return `<li class="task sp-${t.space} ${isDone(t) ? 'is-done' : ''} ${t.blocked ? 'is-blocked' : ''}" data-id="${esc(t.id)}">
-      <div class="swipe-bg" aria-hidden="true"><span class="l">✓ ${isDone(t) ? 'Reopen' : 'Done'}</span><span class="r">+1 day →</span></div>
+    const over = dl && dl.n < 0 && !isDone(t);
+    return `<li class="task sp-${t.space} ${isDone(t) ? 'is-done' : ''} ${t.blocked ? 'is-blocked' : ''} ${st === 'doing' ? 'is-doing' : ''} ${t.critical && !isDone(t) ? 'is-crit' : over ? 'is-over' : ''}" data-id="${esc(t.id)}">
+      <div class="swipe-bg" aria-hidden="true"><span class="l">✓ ${isDone(t) ? 'Reopen' : 'Complete'}</span><span class="r">+1 day ⟶</span></div>
       <div class="task-inner">
         <button class="ring" data-act="cycle" aria-label="${aria}">${ringSvg(t)}</button>
         <div class="task-main" data-act="edit">
@@ -214,15 +224,56 @@
   }
   const taskList = (list, showSpace) => `<ul class="tasks">${list.map((t) => taskRow(t, showSpace)).join('')}</ul>`;
   const secHead = (title, n, cls = '', right = '') => `<div class="sec-h"><h2 class="${cls}">${title}${n != null ? `<span class="n">${n}</span>` : ''}</h2>${right}</div>`;
+  /* animated number: renders previous value, render() tweens it to the new one */
+  const ringMem = new Map(), barMem = new Map(), countMem = new Map();
+  const num = (key, n, suf = '') => `<b class="num" data-ck="${esc(key)}" data-count="${n}" data-suf="${suf}">${countMem.has(key) ? countMem.get(key) : 0}${suf}</b>`;
+  const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  let lastRendered = null;
   function render() {
-    const v = ui.view;
+    const v = ui.view; const viewChanged = lastRendered !== v; lastRendered = v;
+    const rm = reduced();
+    // FLIP: remember where each task row was
+    const before = new Map();
+    if (!viewChanged && !rm) els.main.querySelectorAll('.task').forEach((r) => { if (!before.has(r.dataset.id)) before.set(r.dataset.id, r.getBoundingClientRect().top); });
     document.body.dataset.view = v;
     els.tabbar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.view === v));
     if (v === 'home') renderHome();
     else if (v === 'more') renderMore();
     else renderSpace(v);
     renderQA();
+    afterRender(viewChanged, before, rm);
+  }
+  function afterRender(viewChanged, before, rm) {
+    const main = els.main;
+    if (viewChanged && !rm) {
+      main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter');
+      main.querySelectorAll('.sec, .set-card').forEach((el, i) => el.style.setProperty('--i', Math.min(i, 8)));
+      clearTimeout(afterRender.t); afterRender.t = setTimeout(() => main.classList.remove('enter'), 1100);
+    }
+    if (!rm && before.size) {
+      const seen = new Set();
+      main.querySelectorAll('.task').forEach((r) => {
+        const id = r.dataset.id; if (seen.has(id)) return; seen.add(id);
+        if (before.has(id)) {
+          const dy = before.get(id) - r.getBoundingClientRect().top;
+          if (Math.abs(dy) > 2) r.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.2,.9,.25,1)' });
+        } else r.animate([{ opacity: 0, transform: 'scale(.94) translateY(8px)' }, { opacity: 1, transform: 'none' }], { duration: 380, easing: 'cubic-bezier(.2,.9,.25,1)' });
+      });
+    }
+    // tween rings, bars and counters from their previous values
+    void main.offsetWidth;
+    main.querySelectorAll('.arc[data-rk]').forEach((a) => { a.style.strokeDashoffset = a.dataset.off; ringMem.set(a.dataset.rk, +a.dataset.off); });
+    main.querySelectorAll('.bar i[data-bk]').forEach((b) => { b.style.width = b.dataset.w + '%'; barMem.set(b.dataset.bk, +b.dataset.w); });
+    document.querySelectorAll('[data-count]').forEach((el) => {
+      const key = el.dataset.ck, to = +el.dataset.count, suf = el.dataset.suf || '';
+      const from = countMem.has(key) ? countMem.get(key) : 0; countMem.set(key, to);
+      if (rm || from === to) { el.textContent = to + suf; return; }
+      const t0 = performance.now(), dur = 700;
+      const step = (now) => { const k = Math.min(1, (now - t0) / dur); const e = 1 - Math.pow(1 - k, 3);
+        el.textContent = Math.round(from + (to - from) * e) + suf; if (k < 1 && el.isConnected) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    });
   }
 
   function renderHome() {
@@ -231,8 +282,8 @@
     const open = state.tasks.filter((t) => !isDone(t));
     const crit = open.filter((t) => t.critical).length;
     const over = open.filter((t) => t.due && diffDays(parseYmd(t.due), today()) < 0).length;
-    els.topbar.innerHTML = `<div><small>${DOWL[now.getDay()]}, ${MON[now.getMonth()]} ${now.getDate()}</small><h1>${greet}</h1>
-      <div class="tb-stats"><span class="pill">${open.length} open</span>${crit ? `<span class="pill crit">${crit} critical</span>` : ''}${over ? `<span class="pill over">${over} overdue</span>` : ''}</div></div>`;
+    els.topbar.innerHTML = `<div><small><span class="live"></span>Focus·OS // ${DOW[now.getDay()]} ${MON[now.getMonth()]} ${now.getDate()}</small><h1 class="grad">${greet}</h1>
+      <div class="tb-stats"><span class="pill">${num('open', open.length)} open</span>${crit ? `<span class="pill crit">${num('crit', crit)} critical</span>` : ''}${over ? `<span class="pill over">${num('over', over)} overdue</span>` : ''}</div></div>`;
 
     // week strip
     const ws = weekStart(now); const t0 = today(); let days = '';
@@ -290,8 +341,8 @@
     const doneN = linked.filter(isDone).length;
     const meta = auto ? (linked.length ? `${doneN}/${linked.length} linked tasks done · auto` : 'No linked tasks yet · tap to link') : 'Manual · tap % to advance';
     return `<div class="card target sp-${tg.space} ${pct >= 100 ? 'complete' : ''}" data-act="target" data-id="${esc(tg.id)}" role="button" tabindex="0">
-      <div class="tg-top"><span class="tg-title">${pct >= 100 ? '✓ ' : ''}${esc(tg.title)}</span>${auto ? `<span class="tg-pct">${pct}%</span>` : `<button class="tg-pct" data-act="tgcycle" data-id="${esc(tg.id)}" aria-label="Advance progress">${pct}%</button>`}</div>
-      <div class="bar"><i style="width:${pct}%"></i></div><div class="tg-meta">${meta}</div></div>`;
+      <div class="tg-top"><span class="tg-title">${pct >= 100 ? '✓ ' : ''}${esc(tg.title)}</span>${auto ? `<span class="tg-pct">${num('tg:' + tg.id, pct, '%')}</span>` : `<button class="tg-pct" data-act="tgcycle" data-id="${esc(tg.id)}" aria-label="Advance progress">${num('tg:' + tg.id, pct, '%')}</button>`}</div>
+      <div class="bar"><i data-bk="${esc(tg.id)}" data-w="${pct}" style="width:${barMem.has(tg.id) ? barMem.get(tg.id) : 0}%"></i></div><div class="tg-meta">${meta}</div></div>`;
   }
 
   function renderSpace(sp) {
@@ -300,8 +351,8 @@
     const t0 = today();
     const crit = open.filter((t) => t.critical).length;
     const over = open.filter((t) => t.due && diffDays(parseYmd(t.due), t0) < 0).length;
-    els.topbar.innerHTML = `<div><small>${open.length} open${done.length ? ` · ${done.length} done` : ''}</small><h1 class="acc-h"><span class="acc">${SPACES[sp]}</span></h1>
-      <div class="tb-stats">${crit ? `<span class="pill crit">${crit} critical</span>` : ''}${over ? `<span class="pill over">${over} overdue</span>` : ''}</div></div>
+    els.topbar.innerHTML = `<div><small><span class="live"></span>Sector // ${SPACES[sp]}</small><h1 class="acc-h"><span class="acc">${SPACES[sp]}</span></h1>
+      <div class="tb-stats"><span class="pill">${num(sp + ':open', open.length)} open</span>${done.length ? `<span class="pill">${num(sp + ':done', done.length)} done</span>` : ''}${crit ? `<span class="pill crit">${num(sp + ':crit', crit)} critical</span>` : ''}${over ? `<span class="pill over">${num(sp + ':over', over)} overdue</span>` : ''}</div></div>
       <div class="seg sm" role="tablist"><button data-act="filter" data-f="active" class="${ui.filter === 'active' ? 'on' : ''}">Active</button><button data-act="filter" data-f="done" class="${ui.filter === 'done' ? 'on' : ''}">Done</button></div>`;
     let html = '';
     if (ui.filter === 'done') {
@@ -331,7 +382,7 @@
     const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
     const last = state.prefs.lastExport ? new Date(state.prefs.lastExport) : null;
     const stale = !last || Date.now() - last > 7 * 86400000;
-    els.topbar.innerHTML = '<div><small>Private by design</small><h1>Data &amp; settings</h1></div>';
+    els.topbar.innerHTML = '<div><small><span class="live"></span>Local vault // offline</small><h1 class="grad">Data &amp; settings</h1></div>';
     els.main.innerHTML = `
       <section class="card set-card sec"><div class="shield">${ICON.shield}<div><h3>Your data stays on this iPhone</h3>
         <p>Tasks are stored only in this app's on-device storage. No accounts, no sync, no analytics — the app makes no network requests at all.</p></div></div>
@@ -349,7 +400,7 @@
         <li>Quick-add words: <code>today</code> <code>tmr</code> <code>fri</code> <code>next mon</code> <code>+3d</code> <code>+2w</code> <code>11/14</code> · <code>!</code> critical · <code>@w</code>/<code>@p</code> space.</li></ul></section>
       <section class="card set-card"><h3>Clean up</h3><p>Erasing cannot be undone unless you have a backup.</p>
         <div class="btns"><button class="btn" data-act="cleardone">Clear all completed</button><button class="btn danger" data-act="erase">Erase all data</button></div></section>
-      <p class="empty" style="font-size:13px">Focus v${APP_VERSION} · works offline</p>`;
+      <p class="empty ver">Focus·OS v${APP_VERSION} · works offline</p>`;
   }
 
   /* ---------------- quick add ---------------- */
@@ -428,7 +479,7 @@
       mk({ title: 'Plan weekend trip', space: 'personal' }, 25),
     ];
     tasks[2].priority = 'high';
-    commit('Sample tasks loaded', () => { state.tasks.push(...tasks); state.targets.push(tw, tw2, tp); });
+    fxMuted = true; commit('Sample tasks loaded', () => { state.tasks.push(...tasks); state.targets.push(tw, tw2, tp); }); fxMuted = false;
   }
 
   /* ---------------- sheets ---------------- */
@@ -779,6 +830,77 @@
     setInterval(dayCheck, 60000);
   }
 
+  /* ---------------- effects ---------------- */
+  function burst(x, y) {
+    if (reduced()) return;
+    const b = document.createElement('div'); b.className = 'burst'; b.style.transform = `translate(${x}px,${y}px)`;
+    const cols = ['var(--ok)', 'var(--work)', 'var(--personal)', '#ffffff'];
+    let h = '<div class="wave"></div><div class="tx">COMPLETE</div>';
+    for (let i = 0; i < 18; i++) {
+      const a = (i / 18) * 360 + Math.random() * 14, d = 36 + Math.random() * 38;
+      h += `<i class="p${i % 3 === 0 ? ' l' : ''}" style="--a:${a.toFixed(0)}deg;--d:${d.toFixed(0)}px;--c:${cols[i % 4]};animation-delay:${(Math.random() * 60).toFixed(0)}ms"></i>`;
+    }
+    b.innerHTML = h; document.body.appendChild(b);
+    if (navigator.vibrate) navigator.vibrate(12);
+    setTimeout(() => b.remove(), 1300);
+  }
+  function bindRipples() {
+    const sel = '.btn,.chip,.seg button,.tabbar button,.qa-add,.more-btn,.target,.wd,.link-btn,.x-btn,.toast button,.task-inner';
+    document.addEventListener('pointerdown', (e) => {
+      if (reduced()) return;
+      const el = e.target.closest(sel); if (!el) return;
+      const r = el.getBoundingClientRect(); const s = document.createElement('span'); s.className = 'rip';
+      s.style.left = (e.clientX - r.left) + 'px'; s.style.top = (e.clientY - r.top) + 'px';
+      s.style.setProperty('--rs', (Math.max(r.width, r.height) / 16 * 2.3).toFixed(1));
+      el.appendChild(s); setTimeout(() => s.remove(), 650);
+    }, { passive: true });
+  }
+  /* starfield: ~30fps, capped DPR, paused when hidden, static under reduced motion */
+  function starfield() {
+    const c = $('#fx'); if (!c || !c.getContext) return; const ctx = c.getContext('2d');
+    const mqR = matchMedia('(prefers-reduced-motion: reduce)'), mqL = matchMedia('(prefers-color-scheme: light)');
+    let w = 0, h = 0, stars = [], raf = 0, last = 0, shoot = null;
+    function size() {
+      const dpr = Math.min(2, window.devicePixelRatio || 1); const nw = window.innerWidth, nh = window.innerHeight;
+      c.width = Math.round(nw * dpr); c.height = Math.round(nh * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (nw !== w || !stars.length) {
+        const n = Math.min(220, Math.round((nw * nh) / 4200));
+        stars = Array.from({ length: n }, () => ({ x: Math.random() * nw, y: Math.random() * Math.max(nh, 900), z: Math.random() * 0.85 + 0.15, t: Math.random() * 6.28, s: Math.random() * 0.8 + 0.4, hue: Math.random() < 0.18 ? (Math.random() < 0.5 ? 1 : 2) : 0 }));
+      }
+      w = nw; h = nh; draw(0);
+    }
+    const tints = [[205, 222, 255], [120, 235, 255], [255, 140, 230]];
+    function draw(dt) {
+      ctx.clearRect(0, 0, w, h); const lt = mqL.matches;
+      for (const s of stars) {
+        s.y -= dt * 0.008 * s.z; if (s.y < -2) { s.y = h + 2; s.x = Math.random() * w; }
+        s.t += dt * 0.0022 * s.s;
+        const col = lt ? [50, 70, 150] : tints[s.hue];
+        ctx.globalAlpha = (lt ? 0.22 : 0.9) * s.z * (0.5 + 0.5 * Math.sin(s.t));
+        ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+        const r = s.z * 1.4; ctx.fillRect(s.x, s.y, r, r);
+      }
+      ctx.globalAlpha = 1;
+      if (!lt && dt) {
+        if (!shoot && Math.random() < dt * 0.00005) shoot = { x: w * (0.3 + Math.random() * 0.7), y: h * Math.random() * 0.4, l: 0 };
+        if (shoot) {
+          shoot.l += dt; const p = shoot.l / 800, x = shoot.x - p * 280, y = shoot.y + p * 140;
+          const g = ctx.createLinearGradient(x, y, x + 70, y - 35); g.addColorStop(0, 'rgba(170,240,255,.9)'); g.addColorStop(1, 'rgba(170,240,255,0)');
+          ctx.strokeStyle = g; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 70, y - 35); ctx.stroke();
+          if (p >= 1) shoot = null;
+        }
+      }
+    }
+    function loop(ts) { raf = requestAnimationFrame(loop); const dt = ts - last; if (dt < 31) return; last = ts; draw(Math.min(dt, 80)); }
+    function start() { cancelAnimationFrame(raf); raf = 0; if (mqR.matches || document.hidden) { draw(0); return; } last = performance.now(); raf = requestAnimationFrame(loop); }
+    window.addEventListener('resize', size);
+    document.addEventListener('visibilitychange', start);
+    if (mqR.addEventListener) { mqR.addEventListener('change', start); mqL.addEventListener('change', () => draw(0)); }
+    size(); start();
+    fxState.running = () => raf !== 0;
+  }
+  const fxState = { running: () => false };
+
   /* ---------------- boot ---------------- */
   async function boot() {
     Object.assign(els, { topbar: $('#topbar'), main: $('#main'), tabbar: $('#tabbar'), qa: $('#qa'), qaInput: $('#qaInput'), qaChips: $('#qaChips'),
@@ -792,7 +914,7 @@
       }
     } catch (e) { console.warn('load failed', e); }
     ui.view = ['home', 'work', 'personal', 'more'].includes(state.prefs.view) ? state.prefs.view : 'home';
-    bindEvents(); bindGestures(); render();
+    bindEvents(); bindGestures(); bindRipples(); render(); starfield();
     // ask the browser not to evict our storage (granted automatically for Home Screen apps on iOS)
     try { if (navigator.storage && navigator.storage.persist) { persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist()); if (ui.view === 'more') render(); } } catch {}
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
@@ -800,7 +922,7 @@
       navigator.serviceWorker.register('./sw.js').catch((e) => console.warn('SW registration failed', e));
       navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) toast('App updated — reopen to use the new version'); });
     }
-    window.__focus = { state: () => state, parseQuick, ready: true };
+    window.__focus = { state: () => state, parseQuick, fx: () => fxState.running(), ready: true };
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();

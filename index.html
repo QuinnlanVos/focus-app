@@ -8,8 +8,8 @@
 <title>Focus</title>
 <meta name="description" content="Private, offline to-dos for work and personal life. Data never leaves this device.">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f4f8">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0c0e14">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#edf1fa">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#04060d">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -22,6 +22,15 @@
 <script src="app.js" defer></script>
 </head>
 <body data-view="home">
+<canvas id="fx" aria-hidden="true"></canvas>
+<div class="bg-aura" aria-hidden="true"></div>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-scan" aria-hidden="true"></div>
+<svg class="defs" aria-hidden="true" focusable="false"><defs>
+  <linearGradient id="gWork" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3d7bff"/><stop offset="1" stop-color="#22e3ff"/></linearGradient>
+  <linearGradient id="gPers" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffae3d"/><stop offset="1" stop-color="#ff4fd8"/></linearGradient>
+  <linearGradient id="gOk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22e3ff"/><stop offset="1" stop-color="#3dffa8"/></linearGradient>
+</defs></svg>
 <header class="topbar" id="topbar"></header>
 <main id="main"></main>
 

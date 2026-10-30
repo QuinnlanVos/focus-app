@@ -1,6 +1,6 @@
 /* Focus service worker: caches the app's own static files so it works fully offline.
    It never contacts any other server and never sees your tasks (those live in IndexedDB). */
-const CACHE = 'focus-v1.0.2';
+const CACHE = 'focus-v2.0.0';
 const ASSETS = [
   './', './index.html', './styles.css', './app.js', './manifest.json',
   './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
